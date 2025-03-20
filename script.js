@@ -1,3 +1,6 @@
+// Add this at the beginning of your script
+const worker = new Worker('worker.js');
+
 document.getElementById('remove-bg').addEventListener('click', () => {
     const fileInput = document.getElementById('upload');
     const file = fileInput.files[0];
@@ -85,6 +88,20 @@ function showPreview(img, label) {
     }
 }
 
+// Add progress bar HTML
+function addProgressBar() {
+    const progressContainer = document.createElement('div');
+    progressContainer.className = 'progress-container';
+    progressContainer.innerHTML = `
+        <div class="progress-bar">
+            <div class="progress" id="progress"></div>
+        </div>
+        <div class="progress-text" id="progress-text">0%</div>
+    `;
+    return progressContainer;
+}
+
+// Update the removeBackground function
 function removeBackground(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -92,105 +109,42 @@ function removeBackground(img) {
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
 
+    // Show progress bar
+    const progressContainer = addProgressBar();
+    document.querySelector('.container').insertBefore(
+        progressContainer,
+        document.getElementById('result')
+    );
+
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
 
-    // Calculate dominant background color
-    const colorMap = {};
-    for (let i = 0; i < data.length; i += 4) {
-        const r = Math.floor(data[i] / 10) * 10;
-        const g = Math.floor(data[i + 1] / 10) * 10;
-        const b = Math.floor(data[i + 2] / 10) * 10;
-        const key = `${r},${g},${b}`;
-        colorMap[key] = (colorMap[key] || 0) + 1;
-    }
+    // Set up worker message handling
+    worker.onmessage = function(e) {
+        if (e.data.type === 'progress') {
+            // Update progress bar
+            document.getElementById('progress').style.width = `${e.data.progress}%`;
+            document.getElementById('progress-text').textContent = `${e.data.progress}%`;
+        } else if (e.data.type === 'complete') {
+            // Process is complete
+            ctx.putImageData(e.data.imageData, 0, 0);
 
-    // Find the most common color (likely background)
-    let dominantColor = Object.entries(colorMap).reduce((a, b) =>
-        (a[1] > b[1] ? a : b))[0].split(',').map(Number);
-
-    // Edge detection with enhanced Sobel
-    const edgeData = new Uint8Array(data.length / 4);
-    const sobelThreshold = 20; // Adjust for edge sensitivity
-
-    for (let y = 1; y < canvas.height - 1; y++) {
-        for (let x = 1; x < canvas.width - 1; x++) {
-            const idx = (y * canvas.width + x) * 4;
-
-            // Get surrounding pixels
-            const surrounding = getSurroundingPixels(x, y, canvas.width, data);
-
-            // Calculate edge strength using multiple channels
-            const edgeStrength = calculateEdgeStrength(surrounding);
-
-            // Store edge information with dynamic threshold
-            edgeData[y * canvas.width + x] = edgeStrength > sobelThreshold ? 255 : 0;
+            // Create result image
+            const processedImg = new Image();
+            processedImg.onload = function() {
+                showPreview(processedImg, 'Background Removed');
+                // Remove progress bar
+                progressContainer.remove();
+            };
+            processedImg.src = canvas.toDataURL();
         }
-    }
-
-    // Color difference threshold based on dominant color
-    const colorThreshold = 30; // Adjust for color sensitivity
-    const edgeBlend = 2; // Pixels around edges to blend
-
-    // Remove background with improved color detection
-    for (let i = 0; i < data.length; i += 4) {
-        const x = (i / 4) % canvas.width;
-        const y = Math.floor((i / 4) / canvas.width);
-
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-
-        // Calculate color difference from dominant background
-        const colorDiff = Math.sqrt(
-            Math.pow(r - dominantColor[0], 2) +
-            Math.pow(g - dominantColor[1], 2) +
-            Math.pow(b - dominantColor[2], 2)
-        );
-
-        // Check for edges with blending
-        let isNearEdge = false;
-        let edgeDistance = Infinity;
-
-        // Check surrounding pixels for edges
-        for (let dy = -edgeBlend; dy <= edgeBlend; dy++) {
-            for (let dx = -edgeBlend; dx <= edgeBlend; dx++) {
-                const ex = x + dx;
-                const ey = y + dy;
-                if (ex >= 0 && ex < canvas.width && ey >= 0 && ey < canvas.height) {
-                    if (edgeData[ey * canvas.width + ex] > 0) {
-                        const distance = Math.sqrt(dx * dx + dy * dy);
-                        edgeDistance = Math.min(edgeDistance, distance);
-                        isNearEdge = true;
-                    }
-                }
-            }
-        }
-
-        // Determine if pixel is background
-        const isBackground = colorDiff < colorThreshold;
-
-        // Set transparency with smooth edge blending
-        if (isBackground) {
-            if (isNearEdge) {
-                // Create smooth transition near edges
-                const edgeBlendFactor = Math.min(edgeDistance / edgeBlend, 1);
-                data[i + 3] = Math.floor(255 * edgeBlendFactor);
-            } else {
-                data[i + 3] = 0; // Fully transparent
-            }
-        }
-    }
-
-    // Apply the modified image data
-    ctx.putImageData(imageData, 0, 0);
-
-    // Create result image
-    const processedImg = new Image();
-    processedImg.onload = function() {
-        showPreview(processedImg, 'Background Removed');
     };
-    processedImg.src = canvas.toDataURL();
+
+    // Start processing with worker
+    worker.postMessage({
+        imageData: imageData,
+        width: canvas.width,
+        height: canvas.height
+    });
 }
 
 // Helper function to get surrounding pixels
