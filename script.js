@@ -86,53 +86,53 @@ function showPreview(img, label) {
 }
 
 function removeBackground(img) {
-    // Create a canvas for processing
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     canvas.width = img.width;
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
 
-    // Get image data
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
-    // Improved background removal algorithm
-    // This uses edge detection and color difference to better identify background
+    // Calculate dominant background color
+    const colorMap = {};
+    for (let i = 0; i < data.length; i += 4) {
+        const r = Math.floor(data[i] / 10) * 10;
+        const g = Math.floor(data[i + 1] / 10) * 10;
+        const b = Math.floor(data[i + 2] / 10) * 10;
+        const key = `${r},${g},${b}`;
+        colorMap[key] = (colorMap[key] || 0) + 1;
+    }
 
-    // First pass: detect edges
+    // Find the most common color (likely background)
+    let dominantColor = Object.entries(colorMap).reduce((a, b) =>
+        (a[1] > b[1] ? a : b))[0].split(',').map(Number);
+
+    // Edge detection with enhanced Sobel
     const edgeData = new Uint8Array(data.length / 4);
+    const sobelThreshold = 20; // Adjust for edge sensitivity
+
     for (let y = 1; y < canvas.height - 1; y++) {
         for (let x = 1; x < canvas.width - 1; x++) {
             const idx = (y * canvas.width + x) * 4;
 
-            // Simple Sobel edge detection
-            const idx1 = ((y - 1) * canvas.width + (x - 1)) * 4;
-            const idx2 = ((y - 1) * canvas.width + x) * 4;
-            const idx3 = ((y - 1) * canvas.width + (x + 1)) * 4;
-            const idx4 = (y * canvas.width + (x - 1)) * 4;
-            const idx5 = (y * canvas.width + (x + 1)) * 4;
-            const idx6 = ((y + 1) * canvas.width + (x - 1)) * 4;
-            const idx7 = ((y + 1) * canvas.width + x) * 4;
-            const idx8 = ((y + 1) * canvas.width + (x + 1)) * 4;
+            // Get surrounding pixels
+            const surrounding = getSurroundingPixels(x, y, canvas.width, data);
 
-            // Calculate gradient
-            const gx = -1 * data[idx1] + 1 * data[idx3] +
-                -2 * data[idx4] + 2 * data[idx5] +
-                -1 * data[idx6] + 1 * data[idx8];
+            // Calculate edge strength using multiple channels
+            const edgeStrength = calculateEdgeStrength(surrounding);
 
-            const gy = -1 * data[idx1] - 2 * data[idx2] - 1 * data[idx3] +
-                1 * data[idx6] + 2 * data[idx7] + 1 * data[idx8];
-
-            // Calculate gradient magnitude
-            const g = Math.sqrt(gx * gx + gy * gy);
-
-            // Store edge information
-            edgeData[y * canvas.width + x] = g > 30 ? 255 : 0;
+            // Store edge information with dynamic threshold
+            edgeData[y * canvas.width + x] = edgeStrength > sobelThreshold ? 255 : 0;
         }
     }
 
-    // Second pass: remove background based on color and edges
+    // Color difference threshold based on dominant color
+    const colorThreshold = 30; // Adjust for color sensitivity
+    const edgeBlend = 2; // Pixels around edges to blend
+
+    // Remove background with improved color detection
     for (let i = 0; i < data.length; i += 4) {
         const x = (i / 4) % canvas.width;
         const y = Math.floor((i / 4) / canvas.width);
@@ -141,34 +141,118 @@ function removeBackground(img) {
         const g = data[i + 1];
         const b = data[i + 2];
 
-        // Check if pixel is near an edge
-        const isEdge = x > 0 && y > 0 && x < canvas.width - 1 && y < canvas.height - 1 &&
-            edgeData[y * canvas.width + x] > 0;
+        // Calculate color difference from dominant background
+        const colorDiff = Math.sqrt(
+            Math.pow(r - dominantColor[0], 2) +
+            Math.pow(g - dominantColor[1], 2) +
+            Math.pow(b - dominantColor[2], 2)
+        );
 
-        // Check if pixel is likely background (adjust these values as needed)
-        const isBackground =
-            // Light background detection
-            (r > 200 && g > 200 && b > 200) ||
-            // Dark background detection
-            (r < 30 && g < 30 && b < 30) ||
-            // Green screen detection
-            (g > r * 1.5 && g > b * 1.5);
+        // Check for edges with blending
+        let isNearEdge = false;
+        let edgeDistance = Infinity;
 
-        // Set transparency based on background detection and edge proximity
-        if (isBackground && !isEdge) {
-            data[i + 3] = 0; // Fully transparent
-        } else if (isBackground) {
-            data[i + 3] = 128; // Semi-transparent for edges
+        // Check surrounding pixels for edges
+        for (let dy = -edgeBlend; dy <= edgeBlend; dy++) {
+            for (let dx = -edgeBlend; dx <= edgeBlend; dx++) {
+                const ex = x + dx;
+                const ey = y + dy;
+                if (ex >= 0 && ex < canvas.width && ey >= 0 && ey < canvas.height) {
+                    if (edgeData[ey * canvas.width + ex] > 0) {
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        edgeDistance = Math.min(edgeDistance, distance);
+                        isNearEdge = true;
+                    }
+                }
+            }
+        }
+
+        // Determine if pixel is background
+        const isBackground = colorDiff < colorThreshold;
+
+        // Set transparency with smooth edge blending
+        if (isBackground) {
+            if (isNearEdge) {
+                // Create smooth transition near edges
+                const edgeBlendFactor = Math.min(edgeDistance / edgeBlend, 1);
+                data[i + 3] = Math.floor(255 * edgeBlendFactor);
+            } else {
+                data[i + 3] = 0; // Fully transparent
+            }
         }
     }
 
-    // Apply the modified image data back to the canvas
+    // Apply the modified image data
     ctx.putImageData(imageData, 0, 0);
 
-    // Create a new image from the processed canvas
+    // Create result image
     const processedImg = new Image();
     processedImg.onload = function() {
         showPreview(processedImg, 'Background Removed');
     };
     processedImg.src = canvas.toDataURL();
 }
+
+// Helper function to get surrounding pixels
+function getSurroundingPixels(x, y, width, data) {
+    const pixels = [];
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const idx = ((y + dy) * width + (x + dx)) * 4;
+            pixels.push({
+                r: data[idx],
+                g: data[idx + 1],
+                b: data[idx + 2]
+            });
+        }
+    }
+    return pixels;
+}
+
+// Helper function to calculate edge strength
+function calculateEdgeStrength(pixels) {
+    // Sobel kernels for each color channel
+    const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+    let edgeStrength = 0;
+
+    // Calculate edge strength for each color channel
+    ['r', 'g', 'b'].forEach(channel => {
+        let gradX = 0;
+        let gradY = 0;
+
+        for (let i = 0; i < 9; i++) {
+            gradX += pixels[i][channel] * gx[i];
+            gradY += pixels[i][channel] * gy[i];
+        }
+
+        // Add weighted contribution from this channel
+        edgeStrength += Math.sqrt(gradX * gradX + gradY * gradY);
+    });
+
+    return edgeStrength / 3; // Average across channels
+}
+
+// Add these controls to your HTML
+function addControls() {
+    const controls = document.createElement('div');
+    controls.className = 'controls';
+    controls.innerHTML = `
+        <div class="control-group">
+            <label>Edge Sensitivity: <span id="edge-value">20</span></label>
+            <input type="range" id="edge-sensitivity" min="5" max="50" value="20">
+        </div>
+        <div class="control-group">
+            <label>Color Sensitivity: <span id="color-value">30</span></label>
+            <input type="range" id="color-sensitivity" min="10" max="100" value="30">
+        </div>
+    `;
+
+    document.querySelector('.container').insertBefore(
+        controls,
+        document.getElementById('result')
+    );
+}
+
+// Add this CSS to your styles.css
