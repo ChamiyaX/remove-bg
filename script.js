@@ -82,7 +82,15 @@ function showPreview(img, label) {
         // Clear previous results and add original preview
         resultDiv.innerHTML = '';
         resultDiv.appendChild(previewContainer);
+        // Add a data attribute to identify this container
+        previewContainer.setAttribute('data-original', 'true');
     } else {
+        // Remove the original image preview if it exists
+        const originalPreview = resultDiv.querySelector('[data-original="true"]');
+        if (originalPreview) {
+            originalPreview.remove();
+        }
+
         // Add processed image preview
         resultDiv.appendChild(previewContainer);
 
@@ -332,7 +340,22 @@ function initTextEditor() {
             editCanvas.addEventListener('mouseleave', handleMouseUp);
         }
 
-        // Draw base image
+        // Add default text "Background Removed"
+        textLayer = {
+            text: "Background Removed",
+            x: editCanvas.width / 2,
+            y: editCanvas.height - 40, // Position near bottom
+            fontSize: 24,
+            fontFamily: "Arial, sans-serif",
+            color: "#ffffff",
+            bold: true,
+            italic: false
+        };
+
+        // Update the text input field with the default text
+        document.getElementById('text-input').value = textLayer.text;
+
+        // Draw base image with default text
         drawCanvas();
     });
 
