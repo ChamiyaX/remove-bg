@@ -116,6 +116,8 @@ function addProgressBar() {
 function removeBackground(img) {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
+
+    // Preserve original dimensions
     canvas.width = img.width;
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
@@ -128,6 +130,12 @@ function removeBackground(img) {
     );
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    // Store original image dimensions for later use
+    window.originalImageDimensions = {
+        width: img.width,
+        height: img.height
+    };
 
     // Set up worker message handling
     worker.onmessage = function(e) {
@@ -148,7 +156,10 @@ function removeBackground(img) {
 
                 // Dispatch event that image processing is complete
                 document.dispatchEvent(new CustomEvent('imageProcessed', {
-                    detail: { image: processedImg }
+                    detail: {
+                        image: processedImg,
+                        originalImage: img
+                    }
                 }));
 
                 // Add text editing tools
@@ -312,18 +323,24 @@ function initTextEditor() {
     let editCanvas = null;
     let editCtx = null;
     let baseImage = null;
+    let originalImage = null;
 
     // Create edit canvas when processed image is ready
     document.addEventListener('imageProcessed', function(e) {
         const processedImage = e.detail.image;
         baseImage = processedImage;
+        originalImage = e.detail.originalImage;
 
-        // Create edit canvas
+        // Create edit canvas with original dimensions
         if (!editCanvas) {
             editCanvas = document.createElement('canvas');
             editCanvas.className = 'edit-canvas';
-            editCanvas.width = processedImage.width;
-            editCanvas.height = processedImage.height;
+
+            // Use original image dimensions
+            const dims = window.originalImageDimensions;
+            editCanvas.width = dims.width;
+            editCanvas.height = dims.height;
+
             editCtx = editCanvas.getContext('2d');
 
             // Add canvas to the result area
@@ -355,9 +372,57 @@ function initTextEditor() {
         // Update the text input field with the default text
         document.getElementById('text-input').value = textLayer.text;
 
-        // Draw base image with default text
-        drawCanvas();
+        // Draw layers
+        drawLayers();
     });
+
+    // Function to draw all layers in the correct order
+    function drawLayers() {
+        if (!editCanvas || !editCtx || !baseImage) return;
+
+        // Clear canvas
+        editCtx.clearRect(0, 0, editCanvas.width, editCanvas.height);
+
+        // Layer 1: Draw original image (optional - uncomment to see original behind transparent areas)
+        // if (originalImage) {
+        //     editCtx.globalAlpha = 0.3; // Semi-transparent
+        //     editCtx.drawImage(originalImage, 0, 0, editCanvas.width, editCanvas.height);
+        //     editCtx.globalAlpha = 1.0;
+        // }
+
+        // Layer 2: Draw background-removed image
+        editCtx.drawImage(baseImage, 0, 0, editCanvas.width, editCanvas.height);
+
+        // Layer 3: Draw text overlay
+        if (textLayer) {
+            editCtx.font = getFont();
+            editCtx.fillStyle = textLayer.color;
+            editCtx.textAlign = 'center';
+            editCtx.textBaseline = 'middle';
+
+            // Add text shadow for better visibility
+            editCtx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+            editCtx.shadowBlur = 4;
+            editCtx.shadowOffsetX = 2;
+            editCtx.shadowOffsetY = 2;
+
+            editCtx.fillText(textLayer.text, textLayer.x, textLayer.y);
+
+            // Reset shadow
+            editCtx.shadowColor = 'transparent';
+            editCtx.shadowBlur = 0;
+            editCtx.shadowOffsetX = 0;
+            editCtx.shadowOffsetY = 0;
+        }
+
+        // Update download button to use the canvas with all layers
+        updateDownloadButton();
+    }
+
+    // Replace drawCanvas with drawLayers in all places
+    function drawCanvas() {
+        drawLayers();
+    }
 
     // Add text button click handler
     document.getElementById('add-text-btn').addEventListener('click', function() {
@@ -449,28 +514,6 @@ function initTextEditor() {
         if (textLayer.italic) font += 'italic ';
         font += `${textLayer.fontSize}px ${textLayer.fontFamily}`;
         return font;
-    }
-
-    function drawCanvas() {
-        if (!editCanvas || !editCtx || !baseImage) return;
-
-        // Clear canvas
-        editCtx.clearRect(0, 0, editCanvas.width, editCanvas.height);
-
-        // Draw base image
-        editCtx.drawImage(baseImage, 0, 0);
-
-        // Draw text if exists
-        if (textLayer) {
-            editCtx.font = getFont();
-            editCtx.fillStyle = textLayer.color;
-            editCtx.textAlign = 'center';
-            editCtx.textBaseline = 'middle';
-            editCtx.fillText(textLayer.text, textLayer.x, textLayer.y);
-        }
-
-        // Update download button to use the canvas with text
-        updateDownloadButton();
     }
 
     function updateDownloadButton() {
