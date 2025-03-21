@@ -1,227 +1,500 @@
 self.onmessage = function(e) {
     const { imageData, width, height } = e.data;
 
-    // Process the image in chunks
-    const chunkSize = 10000;
-    const totalPixels = imageData.data.length / 4;
-    let processedPixels = 0;
+    // Update progress
+    self.postMessage({ type: 'progress', progress: 5 });
 
-    // Create initial masks
-    const foregroundMask = new Uint8Array(width * height);
-    const backgroundMask = new Uint8Array(width * height);
+    // Step 1: Create a grayscale version for analysis
+    const grayscale = createGrayscale(imageData.data, width, height);
+    self.postMessage({ type: 'progress', progress: 10 });
 
-    // Step 1: Initial segmentation
-    const { fgColors, bgColors } = analyzeImage(imageData.data, width, height);
+    // Step 2: Detect edges using Canny-like algorithm
+    const edges = detectEdges(imageData.data, width, height);
+    self.postMessage({ type: 'progress', progress: 20 });
 
-    // Step 2: Create edge map with enhanced sensitivity
-    const edgeMap = createEdgeMap(imageData.data, width, height);
+    // Step 3: Analyze color distribution
+    const { foregroundColors, backgroundColors } = analyzeColorDistribution(imageData.data, width, height, edges);
+    self.postMessage({ type: 'progress', progress: 30 });
 
-    // Step 3: Process image with enhanced algorithm
-    for (let i = 0; i < imageData.data.length; i += chunkSize * 4) {
-        processChunkEnhanced(
-            imageData.data,
-            foregroundMask,
-            backgroundMask,
-            edgeMap,
-            i,
-            Math.min(i + chunkSize * 4, imageData.data.length),
-            width,
-            height,
-            fgColors,
-            bgColors
-        );
+    // Step 4: Create initial mask using color and edge information
+    const mask = createInitialMask(imageData.data, width, height, foregroundColors, backgroundColors, edges);
+    self.postMessage({ type: 'progress', progress: 50 });
 
-        // Update progress
-        processedPixels += chunkSize;
-        const progress = Math.min((processedPixels / totalPixels) * 100, 100);
-        self.postMessage({ type: 'progress', progress: Math.round(progress) });
-    }
+    // Step 5: Refine mask using graph-cut like algorithm
+    const refinedMask = refineMask(mask, imageData.data, width, height);
+    self.postMessage({ type: 'progress', progress: 70 });
 
-    // Step 4: Refine edges and apply smart smoothing
-    refineEdges(imageData.data, foregroundMask, backgroundMask, width, height);
+    // Step 6: Apply mask to image with smart edge handling
+    applyMaskToImage(imageData.data, refinedMask, width, height);
+    self.postMessage({ type: 'progress', progress: 90 });
+
+    // Step 7: Final edge refinement
+    refineEdges(imageData.data, width, height);
 
     // Send the processed image data back
     self.postMessage({ type: 'complete', imageData: imageData });
 };
 
-function analyzeImage(data, width, height) {
-    const colorStats = new Map();
-    const edgePixels = new Set();
+function createGrayscale(data, width, height) {
+    const grayscale = new Uint8Array(width * height);
 
-    // Collect color statistics and detect edges
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-            const idx = (y * width + x) * 4;
-            const color = [data[idx], data[idx + 1], data[idx + 2]];
-
-            // Quantize colors for better grouping
-            const key = color.map(c => Math.floor(c / 8) * 8).join(',');
-            colorStats.set(key, (colorStats.get(key) || 0) + 1);
-
-            // Check if pixel is on edge
-            if (isEdgePixel(data, idx, width)) {
-                edgePixels.add(`${x},${y}`);
-            }
-        }
-    }
-
-    // Separate colors into foreground and background
-    return separateColors(colorStats, edgePixels, width, height);
-}
-
-function isEdgePixel(data, idx, width) {
-    const threshold = 30;
-    for (let c = 0; c < 3; c++) {
-        const diff = Math.abs(data[idx + c] - data[idx + c + width * 4]) +
-            Math.abs(data[idx + c] - data[idx + c + 4]);
-        if (diff > threshold) return true;
-    }
-    return false;
-}
-
-function separateColors(colorStats, edgePixels, width, height) {
-    const sortedColors = Array.from(colorStats.entries())
-        .sort((a, b) => b[1] - a[1]);
-
-    // Identify potential background colors (usually more prevalent)
-    const bgColors = sortedColors.slice(0, 3)
-        .map(([color]) => color.split(',').map(Number));
-
-    // Identify potential foreground colors (usually more varied)
-    const fgColors = sortedColors.slice(3, 10)
-        .map(([color]) => color.split(',').map(Number));
-
-    return { fgColors, bgColors };
-}
-
-function processChunkEnhanced(data, fgMask, bgMask, edgeMap, start, end, width, height, fgColors, bgColors) {
-    const colorThreshold = 25;
-    const edgeBlend = 4;
-
-    for (let i = start; i < end; i += 4) {
-        const x = (i / 4) % width;
-        const y = Math.floor((i / 4) / width);
-        const idx = y * width + x;
-
+    for (let i = 0; i < data.length; i += 4) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
 
-        // Calculate color similarity scores
-        let bgScore = calculateColorScore(r, g, b, bgColors);
-        let fgScore = calculateColorScore(r, g, b, fgColors);
+        // Convert to grayscale using luminance formula
+        grayscale[i / 4] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    }
 
-        // Consider edge information
-        const edgeStrength = edgeMap[idx] / 255;
-        fgScore *= (1 + edgeStrength);
+    return grayscale;
+}
 
-        // Make decision based on scores
-        if (bgScore > fgScore) {
-            // Likely background pixel
-            let alpha = 0;
+function detectEdges(data, width, height) {
+    const grayscale = createGrayscale(data, width, height);
+    const edges = new Uint8Array(width * height);
 
-            // Check edge proximity for smooth transitions
-            if (edgeStrength > 0) {
-                alpha = Math.round(255 * (1 - edgeStrength));
+    // Step 1: Apply Gaussian blur to reduce noise
+    const blurred = applyGaussianBlur(grayscale, width, height);
+
+    // Step 2: Compute gradient magnitude and direction
+    const { magnitude, direction } = computeGradient(blurred, width, height);
+
+    // Step 3: Non-maximum suppression
+    const suppressed = nonMaximumSuppression(magnitude, direction, width, height);
+
+    // Step 4: Hysteresis thresholding
+    hysteresisThresholding(suppressed, edges, width, height, 20, 50);
+
+    return edges;
+}
+
+function applyGaussianBlur(grayscale, width, height) {
+    const result = new Uint8Array(width * height);
+    const kernel = [
+        [2, 4, 5, 4, 2],
+        [4, 9, 12, 9, 4],
+        [5, 12, 15, 12, 5],
+        [4, 9, 12, 9, 4],
+        [2, 4, 5, 4, 2]
+    ];
+    const kernelSum = 159;
+
+    for (let y = 2; y < height - 2; y++) {
+        for (let x = 2; x < width - 2; x++) {
+            let sum = 0;
+
+            for (let ky = 0; ky < 5; ky++) {
+                for (let kx = 0; kx < 5; kx++) {
+                    const pixelPos = (y + ky - 2) * width + (x + kx - 2);
+                    sum += grayscale[pixelPos] * kernel[ky][kx];
+                }
             }
 
-            data[i + 3] = alpha;
-            bgMask[idx] = 1;
-        } else {
-            // Likely foreground pixel
-            data[i + 3] = 255;
-            fgMask[idx] = 1;
+            result[y * width + x] = Math.round(sum / kernelSum);
         }
     }
+
+    return result;
 }
 
-function calculateColorScore(r, g, b, colorSet) {
-    let minDiff = Infinity;
-    for (const [cr, cg, cb] of colorSet) {
-        const diff = Math.sqrt(
-            Math.pow(r - cr, 2) +
-            Math.pow(g - cg, 2) +
-            Math.pow(b - cb, 2)
-        );
-        minDiff = Math.min(minDiff, diff);
+function computeGradient(grayscale, width, height) {
+    const magnitude = new Uint8Array(width * height);
+    const direction = new Uint8Array(width * height);
+
+    // Sobel operators
+    const sobelX = [
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
+    ];
+    const sobelY = [
+        [-1, -2, -1],
+        [0, 0, 0],
+        [1, 2, 1]
+    ];
+
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            let gx = 0;
+            let gy = 0;
+
+            for (let ky = 0; ky < 3; ky++) {
+                for (let kx = 0; kx < 3; kx++) {
+                    const pixelPos = (y + ky - 1) * width + (x + kx - 1);
+                    gx += grayscale[pixelPos] * sobelX[ky][kx];
+                    gy += grayscale[pixelPos] * sobelY[ky][kx];
+                }
+            }
+
+            // Calculate gradient magnitude
+            const mag = Math.sqrt(gx * gx + gy * gy);
+            magnitude[y * width + x] = Math.min(255, Math.round(mag));
+
+            // Calculate gradient direction (0, 45, 90, 135 degrees)
+            const angle = Math.atan2(gy, gx) * 180 / Math.PI;
+            if ((angle >= -22.5 && angle < 22.5) || (angle >= 157.5 || angle < -157.5)) {
+                direction[y * width + x] = 0; // 0 degrees
+            } else if ((angle >= 22.5 && angle < 67.5) || (angle >= -157.5 && angle < -112.5)) {
+                direction[y * width + x] = 45; // 45 degrees
+            } else if ((angle >= 67.5 && angle < 112.5) || (angle >= -112.5 && angle < -67.5)) {
+                direction[y * width + x] = 90; // 90 degrees
+            } else {
+                direction[y * width + x] = 135; // 135 degrees
+            }
+        }
     }
-    return 1 / (1 + minDiff);
+
+    return { magnitude, direction };
 }
 
-function refineEdges(data, fgMask, bgMask, width, height) {
-    const kernelSize = 2;
+function nonMaximumSuppression(magnitude, direction, width, height) {
+    const result = new Uint8Array(width * height);
+
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            const idx = y * width + x;
+            const dir = direction[idx];
+            const mag = magnitude[idx];
+
+            let neighbor1, neighbor2;
+
+            // Check neighbors based on gradient direction
+            if (dir === 0) { // East-West
+                neighbor1 = magnitude[idx - 1];
+                neighbor2 = magnitude[idx + 1];
+            } else if (dir === 45) { // Northeast-Southwest
+                neighbor1 = magnitude[(y - 1) * width + (x + 1)];
+                neighbor2 = magnitude[(y + 1) * width + (x - 1)];
+            } else if (dir === 90) { // North-South
+                neighbor1 = magnitude[(y - 1) * width + x];
+                neighbor2 = magnitude[(y + 1) * width + x];
+            } else { // Northwest-Southeast
+                neighbor1 = magnitude[(y - 1) * width + (x - 1)];
+                neighbor2 = magnitude[(y + 1) * width + (x + 1)];
+            }
+
+            // Keep pixel if it's a local maximum
+            if (mag >= neighbor1 && mag >= neighbor2) {
+                result[idx] = mag;
+            } else {
+                result[idx] = 0;
+            }
+        }
+    }
+
+    return result;
+}
+
+function hysteresisThresholding(suppressed, edges, width, height, lowThreshold, highThreshold) {
+    // First pass: mark strong edges
+    const strongEdges = new Set();
+    const weakEdges = [];
+
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            const idx = y * width + x;
+            const val = suppressed[idx];
+
+            if (val >= highThreshold) {
+                edges[idx] = 255;
+                strongEdges.add(idx);
+            } else if (val >= lowThreshold) {
+                weakEdges.push(idx);
+            } else {
+                edges[idx] = 0;
+            }
+        }
+    }
+
+    // Second pass: trace weak edges connected to strong edges
+    const dx = [-1, 0, 1, -1, 1, -1, 0, 1];
+    const dy = [-1, -1, -1, 0, 0, 1, 1, 1];
+
+    for (const weakIdx of weakEdges) {
+        const x = weakIdx % width;
+        const y = Math.floor(weakIdx / width);
+        let isConnected = false;
+
+        // Check 8-connected neighbors
+        for (let i = 0; i < 8; i++) {
+            const nx = x + dx[i];
+            const ny = y + dy[i];
+
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                const neighborIdx = ny * width + nx;
+                if (strongEdges.has(neighborIdx)) {
+                    isConnected = true;
+                    break;
+                }
+            }
+        }
+
+        edges[weakIdx] = isConnected ? 255 : 0;
+    }
+}
+
+function analyzeColorDistribution(data, width, height, edges) {
+    // Create color clusters
+    const colorClusters = new Map();
+    const edgePixels = new Set();
+
+    // Identify edge pixels
+    for (let i = 0; i < edges.length; i++) {
+        if (edges[i] > 0) {
+            edgePixels.add(i);
+        }
+    }
+
+    // Analyze colors
+    for (let i = 0; i < data.length; i += 4) {
+        const idx = i / 4;
+
+        // Skip edge pixels for color analysis
+        if (edgePixels.has(idx)) continue;
+
+        const r = Math.floor(data[i] / 8) * 8;
+        const g = Math.floor(data[i + 1] / 8) * 8;
+        const b = Math.floor(data[i + 2] / 8) * 8;
+        const key = `${r},${g},${b}`;
+
+        if (!colorClusters.has(key)) {
+            colorClusters.set(key, {
+                count: 0,
+                color: [r, g, b],
+                pixels: []
+            });
+        }
+
+        const cluster = colorClusters.get(key);
+        cluster.count++;
+
+        // Store pixel positions (limit to avoid memory issues)
+        if (cluster.pixels.length < 1000) {
+            const x = idx % width;
+            const y = Math.floor(idx / width);
+            cluster.pixels.push([x, y]);
+        }
+    }
+
+    // Sort clusters by frequency
+    const sortedClusters = Array.from(colorClusters.values())
+        .sort((a, b) => b.count - a.count);
+
+    // Determine foreground and background colors
+    const backgroundColors = [];
+    const foregroundColors = [];
+
+    // Analyze spatial distribution of top clusters
+    const topClusters = sortedClusters.slice(0, Math.min(10, sortedClusters.length));
+
+    for (const cluster of topClusters) {
+        const isPeripheral = isClusterPeripheral(cluster.pixels, width, height);
+
+        if (isPeripheral) {
+            backgroundColors.push(cluster.color);
+        } else {
+            foregroundColors.push(cluster.color);
+        }
+    }
+
+    // Ensure we have at least some colors in each category
+    if (backgroundColors.length === 0 && topClusters.length > 0) {
+        backgroundColors.push(topClusters[0].color);
+    }
+
+    if (foregroundColors.length === 0 && topClusters.length > 1) {
+        foregroundColors.push(topClusters[1].color);
+    }
+
+    return { foregroundColors, backgroundColors };
+}
+
+function isClusterPeripheral(pixels, width, height) {
+    if (pixels.length === 0) return false;
+
+    const borderThreshold = 0.6; // 60% of pixels need to be near border
+    let borderPixels = 0;
+    const borderDistance = Math.min(width, height) * 0.1; // 10% of image dimension
+
+    for (const [x, y] of pixels) {
+        if (x < borderDistance || x > width - borderDistance ||
+            y < borderDistance || y > height - borderDistance) {
+            borderPixels++;
+        }
+    }
+
+    return borderPixels / pixels.length > borderThreshold;
+}
+
+function createInitialMask(data, width, height, foregroundColors, backgroundColors, edges) {
+    const mask = new Uint8Array(width * height);
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = y * width + x;
+            const i = idx * 4;
+
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+
+            // Check if pixel is on an edge
+            if (edges[idx] > 0) {
+                mask[idx] = 128; // Mark as uncertain
+                continue;
+            }
+
+            // Calculate color similarity to foreground and background
+            let minFgDist = Number.MAX_VALUE;
+            let minBgDist = Number.MAX_VALUE;
+
+            for (const fgColor of foregroundColors) {
+                const dist = colorDistance([r, g, b], fgColor);
+                minFgDist = Math.min(minFgDist, dist);
+            }
+
+            for (const bgColor of backgroundColors) {
+                const dist = colorDistance([r, g, b], bgColor);
+                minBgDist = Math.min(minBgDist, dist);
+            }
+
+            // Assign to foreground or background based on color similarity
+            if (minFgDist < minBgDist) {
+                mask[idx] = 255; // Foreground
+            } else {
+                mask[idx] = 0; // Background
+            }
+        }
+    }
+
+    return mask;
+}
+
+function colorDistance(color1, color2) {
+    return Math.sqrt(
+        Math.pow(color1[0] - color2[0], 2) +
+        Math.pow(color1[1] - color2[1], 2) +
+        Math.pow(color1[2] - color2[2], 2)
+    );
+}
+
+function refineMask(mask, data, width, height) {
+    const refined = new Uint8Array(mask);
+    const iterations = 3;
+
+    for (let iter = 0; iter < iterations; iter++) {
+        // Create a copy of the current mask
+        const current = new Uint8Array(refined);
+
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const idx = y * width + x;
+
+                // Skip definite foreground/background
+                if (current[idx] === 0 || current[idx] === 255) continue;
+
+                // Count foreground and background neighbors
+                let fgCount = 0;
+                let bgCount = 0;
+
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        if (dx === 0 && dy === 0) continue;
+
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        const nidx = ny * width + nx;
+
+                        if (current[nidx] === 255) fgCount++;
+                        if (current[nidx] === 0) bgCount++;
+                    }
+                }
+
+                // Decide based on neighborhood
+                if (fgCount > bgCount) {
+                    refined[idx] = 255;
+                } else if (bgCount > fgCount) {
+                    refined[idx] = 0;
+                }
+                // If equal, leave as uncertain
+            }
+        }
+    }
+
+    // Final pass to resolve any remaining uncertain pixels
+    for (let i = 0; i < refined.length; i++) {
+        if (refined[i] === 128) {
+            // Check surrounding pixels in a larger neighborhood
+            const x = i % width;
+            const y = Math.floor(i / width);
+            let fgCount = 0;
+            let bgCount = 0;
+
+            for (let dy = -2; dy <= 2; dy++) {
+                for (let dx = -2; dx <= 2; dx++) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const nidx = ny * width + nx;
+                        if (refined[nidx] === 255) fgCount++;
+                        if (refined[nidx] === 0) bgCount++;
+                    }
+                }
+            }
+
+            refined[i] = fgCount >= bgCount ? 255 : 0;
+        }
+    }
+
+    return refined;
+}
+
+function applyMaskToImage(data, mask, width, height) {
+    for (let i = 0; i < mask.length; i++) {
+        const alpha = mask[i];
+        data[i * 4 + 3] = alpha;
+    }
+}
+
+function refineEdges(data, width, height) {
     const tempData = new Uint8ClampedArray(data);
+    const kernelSize = 2;
 
     for (let y = kernelSize; y < height - kernelSize; y++) {
         for (let x = kernelSize; x < width - kernelSize; x++) {
             const idx = (y * width + x) * 4;
 
-            // Only process border regions
-            if (isOnBorder(fgMask, bgMask, x, y, width)) {
+            // Only process semi-transparent pixels
+            if (data[idx + 3] > 0 && data[idx + 3] < 255) {
                 let alphaSum = 0;
                 let weightSum = 0;
 
-                // Weighted average of surrounding pixels
                 for (let dy = -kernelSize; dy <= kernelSize; dy++) {
                     for (let dx = -kernelSize; dx <= kernelSize; dx++) {
-                        const neighborIdx = ((y + dy) * width + (x + dx)) * 4;
-                        const weight = 1 / (1 + Math.sqrt(dx * dx + dy * dy));
-                        alphaSum += tempData[neighborIdx + 3] * weight;
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        const nidx = (ny * width + nx) * 4;
+
+                        // Calculate weight based on color similarity and distance
+                        const colorSimilarity = 1 - (
+                            Math.abs(tempData[idx] - tempData[nidx]) +
+                            Math.abs(tempData[idx + 1] - tempData[nidx + 1]) +
+                            Math.abs(tempData[idx + 2] - tempData[nidx + 2])
+                        ) / 765;
+
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const weight = colorSimilarity / (1 + distance);
+
+                        alphaSum += tempData[nidx + 3] * weight;
                         weightSum += weight;
                     }
                 }
 
-                // Apply refined alpha
+                // Apply weighted average alpha
                 data[idx + 3] = Math.round(alphaSum / weightSum);
             }
         }
     }
-}
-
-function isOnBorder(fgMask, bgMask, x, y, width) {
-    const idx = y * width + x;
-    if (!fgMask[idx] && !bgMask[idx]) return false;
-
-    // Check if pixel has both foreground and background neighbors
-    for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-            const neighborIdx = (y + dy) * width + (x + dx);
-            if (fgMask[neighborIdx] !== fgMask[idx]) return true;
-        }
-    }
-    return false;
-}
-
-function createEdgeMap(data, width, height) {
-    const edgeMap = new Uint8Array(width * height);
-    const sobelThreshold = 30;
-
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-            const idx = (y * width + x) * 4;
-            let edgeValue = 0;
-
-            // Calculate edge strength for each channel
-            for (let c = 0; c < 3; c++) {
-                const gx = -1 * data[idx - width * 4 - 4 + c] +
-                    -2 * data[idx - 4 + c] +
-                    -1 * data[idx + width * 4 - 4 + c] +
-                    1 * data[idx - width * 4 + 4 + c] +
-                    2 * data[idx + 4 + c] +
-                    1 * data[idx + width * 4 + 4 + c];
-
-                const gy = -1 * data[idx - width * 4 - 4 + c] +
-                    -2 * data[idx - width * 4 + c] +
-                    -1 * data[idx - width * 4 + 4 + c] +
-                    1 * data[idx + width * 4 - 4 + c] +
-                    2 * data[idx + width * 4 + c] +
-                    1 * data[idx + width * 4 + 4 + c];
-
-                edgeValue += Math.sqrt(gx * gx + gy * gy);
-            }
-
-            edgeMap[y * width + x] = edgeValue > sobelThreshold ? 255 : 0;
-        }
-    }
-    return edgeMap;
 }
