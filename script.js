@@ -137,6 +137,14 @@ function removeBackground(img) {
                 showPreview(processedImg, 'Background Removed');
                 // Remove progress bar
                 progressContainer.remove();
+
+                // Dispatch event that image processing is complete
+                document.dispatchEvent(new CustomEvent('imageProcessed', {
+                    detail: { image: processedImg }
+                }));
+
+                // Add text editing tools
+                addTextTools();
             };
             processedImg.src = canvas.toDataURL();
         }
@@ -233,4 +241,235 @@ function addDownloadButton(imageUrl) {
     // Add button to the result container
     const resultDiv = document.getElementById('result');
     resultDiv.appendChild(downloadBtn);
+}
+
+// Add this after the addDownloadButton function
+function addTextTools() {
+    // Create text tools container
+    const textTools = document.createElement('div');
+    textTools.className = 'text-tools';
+    textTools.innerHTML = `
+        <h3>Add Text</h3>
+        <div class="text-input-group">
+            <input type="text" id="text-input" placeholder="Enter your text here" class="text-input">
+            <button id="add-text-btn" class="text-btn">Add Text</button>
+        </div>
+        <div class="text-controls">
+            <div class="control-group">
+                <label>Font Size:</label>
+                <input type="range" id="font-size" min="10" max="72" value="24">
+                <span id="font-size-value">24px</span>
+            </div>
+            <div class="control-group">
+                <label>Font Family:</label>
+                <select id="font-family">
+                    <option value="Arial, sans-serif">Arial</option>
+                    <option value="'Times New Roman', serif">Times New Roman</option>
+                    <option value="'Courier New', monospace">Courier New</option>
+                    <option value="Impact, sans-serif">Impact</option>
+                    <option value="'Comic Sans MS', cursive">Comic Sans</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Text Color:</label>
+                <input type="color" id="text-color" value="#ffffff">
+            </div>
+            <div class="control-group">
+                <label>Bold:</label>
+                <input type="checkbox" id="text-bold">
+            </div>
+            <div class="control-group">
+                <label>Italic:</label>
+                <input type="checkbox" id="text-italic">
+            </div>
+        </div>
+    `;
+
+    // Add to container
+    document.querySelector('.container').insertBefore(
+        textTools,
+        document.getElementById('result')
+    );
+
+    // Initialize text editing canvas
+    initTextEditor();
+}
+
+// Initialize text editor functionality
+function initTextEditor() {
+    let textLayer = null;
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let editCanvas = null;
+    let editCtx = null;
+    let baseImage = null;
+
+    // Create edit canvas when processed image is ready
+    document.addEventListener('imageProcessed', function(e) {
+        const processedImage = e.detail.image;
+        baseImage = processedImage;
+
+        // Create edit canvas
+        if (!editCanvas) {
+            editCanvas = document.createElement('canvas');
+            editCanvas.className = 'edit-canvas';
+            editCanvas.width = processedImage.width;
+            editCanvas.height = processedImage.height;
+            editCtx = editCanvas.getContext('2d');
+
+            // Add canvas to the result area
+            const editContainer = document.createElement('div');
+            editContainer.className = 'edit-container';
+            editContainer.appendChild(editCanvas);
+
+            document.getElementById('result').appendChild(editContainer);
+
+            // Add event listeners for canvas interaction
+            editCanvas.addEventListener('mousedown', handleMouseDown);
+            editCanvas.addEventListener('mousemove', handleMouseMove);
+            editCanvas.addEventListener('mouseup', handleMouseUp);
+            editCanvas.addEventListener('mouseleave', handleMouseUp);
+        }
+
+        // Draw base image
+        drawCanvas();
+    });
+
+    // Add text button click handler
+    document.getElementById('add-text-btn').addEventListener('click', function() {
+        const text = document.getElementById('text-input').value;
+        if (!text) return;
+
+        // Create new text layer
+        textLayer = {
+            text: text,
+            x: editCanvas ? editCanvas.width / 2 : 200,
+            y: editCanvas ? editCanvas.height / 2 : 200,
+            fontSize: parseInt(document.getElementById('font-size').value),
+            fontFamily: document.getElementById('font-family').value,
+            color: document.getElementById('text-color').value,
+            bold: document.getElementById('text-bold').checked,
+            italic: document.getElementById('text-italic').checked
+        };
+
+        // Draw canvas with new text
+        drawCanvas();
+    });
+
+    // Update font size display
+    document.getElementById('font-size').addEventListener('input', function() {
+        document.getElementById('font-size-value').textContent = this.value + 'px';
+        if (textLayer) {
+            textLayer.fontSize = parseInt(this.value);
+            drawCanvas();
+        }
+    });
+
+    // Update text properties
+    ['font-family', 'text-color', 'text-bold', 'text-italic'].forEach(id => {
+        document.getElementById(id).addEventListener('change', function() {
+            if (!textLayer) return;
+
+            if (id === 'font-family') textLayer.fontFamily = this.value;
+            if (id === 'text-color') textLayer.color = this.value;
+            if (id === 'text-bold') textLayer.bold = this.checked;
+            if (id === 'text-italic') textLayer.italic = this.checked;
+
+            drawCanvas();
+        });
+    });
+
+    // Mouse event handlers for dragging text
+    function handleMouseDown(e) {
+        if (!textLayer) return;
+
+        const rect = editCanvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // Check if click is on text
+        editCtx.font = getFont();
+        const textWidth = editCtx.measureText(textLayer.text).width;
+        const textHeight = textLayer.fontSize;
+
+        if (x >= textLayer.x - textWidth / 2 &&
+            x <= textLayer.x + textWidth / 2 &&
+            y >= textLayer.y - textHeight / 2 &&
+            y <= textLayer.y + textHeight / 2) {
+            isDragging = true;
+            dragOffsetX = x - textLayer.x;
+            dragOffsetY = y - textLayer.y;
+        }
+    }
+
+    function handleMouseMove(e) {
+        if (!isDragging) return;
+
+        const rect = editCanvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        textLayer.x = x - dragOffsetX;
+        textLayer.y = y - dragOffsetY;
+
+        drawCanvas();
+    }
+
+    function handleMouseUp() {
+        isDragging = false;
+    }
+
+    function getFont() {
+        let font = '';
+        if (textLayer.bold) font += 'bold ';
+        if (textLayer.italic) font += 'italic ';
+        font += `${textLayer.fontSize}px ${textLayer.fontFamily}`;
+        return font;
+    }
+
+    function drawCanvas() {
+        if (!editCanvas || !editCtx || !baseImage) return;
+
+        // Clear canvas
+        editCtx.clearRect(0, 0, editCanvas.width, editCanvas.height);
+
+        // Draw base image
+        editCtx.drawImage(baseImage, 0, 0);
+
+        // Draw text if exists
+        if (textLayer) {
+            editCtx.font = getFont();
+            editCtx.fillStyle = textLayer.color;
+            editCtx.textAlign = 'center';
+            editCtx.textBaseline = 'middle';
+            editCtx.fillText(textLayer.text, textLayer.x, textLayer.y);
+        }
+
+        // Update download button to use the canvas with text
+        updateDownloadButton();
+    }
+
+    function updateDownloadButton() {
+        // Remove existing download button
+        const existingBtn = document.querySelector('.download-btn');
+        if (existingBtn) {
+            existingBtn.remove();
+        }
+
+        // Create new download button with updated image
+        const downloadBtn = document.createElement('button');
+        downloadBtn.textContent = 'Download Image';
+        downloadBtn.className = 'download-btn';
+        downloadBtn.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.href = editCanvas.toDataURL('image/png');
+            link.download = 'edited-image.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+        document.getElementById('result').appendChild(downloadBtn);
+    }
 }
