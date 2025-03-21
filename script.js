@@ -495,4 +495,15 @@ function initTextEditor() {
 
         document.getElementById('result').appendChild(downloadBtn);
     }
+
+    // Add text input event handler for live preview
+    document.getElementById('text-input').addEventListener('input', function() {
+        if (!textLayer) return;
+
+        // Update text layer with new text
+        textLayer.text = this.value;
+
+        // Redraw canvas with updated text
+        drawCanvas();
+    });
 }
