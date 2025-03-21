@@ -188,3 +188,32 @@ input[type="range"] {
     color: #fff;
     font-size: 14px;
 }
+
+.download-btn {
+    margin-top: 20px;
+    color: #ffffff;
+    background-color: #4CAF50;
+    /* Green button */
+    border: none;
+    padding: 12px 24px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    transition: background-color 0.3s ease, transform 0.2s ease;
+    display: block;
+    width: 100%;
+    max-width: 300px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.download-btn:hover {
+    background-color: #45a049;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.download-btn:active {
+    transform: translateY(0);
+}

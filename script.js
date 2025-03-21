@@ -85,6 +85,9 @@ function showPreview(img, label) {
     } else {
         // Add processed image preview
         resultDiv.appendChild(previewContainer);
+
+        // Add download button for processed image
+        addDownloadButton(img.src);
     }
 }
 
@@ -210,3 +213,24 @@ function addControls() {
 }
 
 // Add this CSS to your styles.css
+
+// Add this function to create a download button
+function addDownloadButton(imageUrl) {
+    // Create download button
+    const downloadBtn = document.createElement('button');
+    downloadBtn.textContent = 'Download Image';
+    downloadBtn.className = 'download-btn';
+    downloadBtn.addEventListener('click', () => {
+        // Create a temporary link element
+        const link = document.createElement('a');
+        link.href = imageUrl;
+        link.download = 'removed-background.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    });
+
+    // Add button to the result container
+    const resultDiv = document.getElementById('result');
+    resultDiv.appendChild(downloadBtn);
+}
